@@ -6,6 +6,8 @@ import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
 import io.minio.RemoveObjectArgs;
+import io.minio.StatObjectArgs;
+import io.minio.StatObjectResponse;
 import io.minio.http.Method;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -106,6 +108,42 @@ public class MinioUtils {
             inputStream.transferTo(outputStream);
         } catch (Exception e) {
             throw new IllegalStateException("MinIO 文件读取失败", e);
+        }
+    }
+
+    public long fileSize(String fileUrl) {
+        return statObject(fileUrl).size();
+    }
+
+    public String fileContentType(String fileUrl) {
+        StatObjectResponse stat = statObject(fileUrl);
+        return stat.contentType();
+    }
+
+    /** 按 [offset, offset+length) 区间流式读取 MinIO 对象，供服务端媒体代理（Range 请求）使用。 */
+    public void copyFileRange(String fileUrl, long offset, long length, OutputStream outputStream) {
+        if (!isManagedFile(fileUrl)) throw new IllegalArgumentException("非受管 MinIO 文件");
+        try (GetObjectResponse response = minioClient.getObject(GetObjectArgs.builder()
+                .bucket(bucketName)
+                .object(objectName(fileUrl))
+                .offset(offset)
+                .length(length)
+                .build())) {
+            response.transferTo(outputStream);
+        } catch (Exception e) {
+            throw new IllegalStateException("MinIO 文件读取失败", e);
+        }
+    }
+
+    private StatObjectResponse statObject(String fileUrl) {
+        if (!isManagedFile(fileUrl)) throw new IllegalArgumentException("非受管 MinIO 文件");
+        try {
+            return minioClient.statObject(StatObjectArgs.builder()
+                    .bucket(bucketName)
+                    .object(objectName(fileUrl))
+                    .build());
+        } catch (Exception e) {
+            throw new IllegalStateException("MinIO 文件信息读取失败", e);
         }
     }
 

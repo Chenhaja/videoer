@@ -1,5 +1,5 @@
 import { computed, ref } from 'vue'
-import { apiRequest } from './api'
+import { apiRequest, getAuthToken } from './api'
 import { DEMO_EVALUATION, DEMO_ITEM, DEMO_PLAN, DEMO_RESULT, DEMO_TRACE } from './demoData'
 import { renderMarkdown } from './markdown'
 
@@ -121,8 +121,14 @@ export function useAnalysisWorkspace({
     sidebar.value.playbackError = ''
     try {
       const response = await apiRequest(`/media/playback?id=${id}`)
-      const url = await response.text()
+      let url = await response.text()
       if (!response.ok) throw new Error(url || '视频加载失败')
+      // 后端 MinIO 托管文件返回的是同源流式代理路径（/media/stream），<video> 标签无法携带
+      // Authorization 头，把登录 token 拼进查询参数由后端校验；外链地址则原样使用。
+      if (url && url.startsWith('/')) {
+        const token = getAuthToken()
+        url += (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token)
+      }
       if (sidebar.value.mediaId === id) {
         sidebar.value.playbackUrl = url
         sidebar.value.playbackError = ''

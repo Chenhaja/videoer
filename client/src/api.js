@@ -4,7 +4,9 @@ const TOKEN_KEY = 'authToken'
 export function hasAuthToken() {
   return Boolean(localStorage.getItem(TOKEN_KEY))
 }
-
+export function getAuthToken() {
+  return localStorage.getItem(TOKEN_KEY) || ''
+}
 export function setAuthToken(token) {
   if (!token) throw new Error('登录接口未返回有效令牌')
   localStorage.setItem(TOKEN_KEY, token)

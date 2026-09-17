@@ -8,6 +8,8 @@ export default defineConfig(({ mode }) => {
     envDir: '..',
     plugins: [vue()],
     server: {
+      host: '0.0.0.0',
+      allowedHosts: ['.cnb.run'],
       proxy: Object.fromEntries(
         ['/user', '/media', '/analysis', '/admin', '/health'].map(path => [
           path,
