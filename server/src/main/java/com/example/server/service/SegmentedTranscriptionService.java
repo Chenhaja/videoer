@@ -1,6 +1,7 @@
 package com.example.server.service;
 
 import com.example.server.dto.TranscriptSegment;
+import com.example.server.dto.PrecisionEvidence;
 import com.example.server.utils.AliyunAsrUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +30,11 @@ public class SegmentedTranscriptionService {
     }
 
     public List<TranscriptSegment> transcribe(String videoPath, Path audioDir, String traceId) throws Exception {
+        return transcribeWithEvidence(videoPath, audioDir, traceId).transcripts();
+    }
+
+    public TranscriptionResult transcribeWithEvidence(String videoPath, Path audioDir, String traceId)
+            throws Exception {
         Files.createDirectories(audioDir);
         Path outputPattern = audioDir.resolve("audio_%03d.mp3");
         runFfmpeg(videoPath, outputPattern);
@@ -39,15 +45,28 @@ public class SegmentedTranscriptionService {
         }
 
         List<TranscriptSegment> result = new ArrayList<>();
+        List<PrecisionEvidence> precisionEvidence = new ArrayList<>();
         int failedSegments = 0;
         RuntimeException lastSegmentError = null;
         for (int i = 0; i < audioFiles.size(); i++) {
             Path audioFile = audioFiles.get(i);
             try {
                 telemetry.increment(traceId, "asrCalls", 1);
-                String text = aliyunAsrUtils.audioToText(audioFile.toString());
-                if (text != null && !text.isBlank()) {
-                    result.add(new TranscriptSegment(i * SEGMENT_MS, (i + 1) * SEGMENT_MS, text));
+                AliyunAsrUtils.Transcription transcription = aliyunAsrUtils.audioToTextWithSegments(
+                        audioFile.toString());
+                if (transcription == null) {
+                    String legacyText = aliyunAsrUtils.audioToText(audioFile.toString());
+                    transcription = new AliyunAsrUtils.Transcription(legacyText, List.of());
+                }
+                if (transcription.text() != null && !transcription.text().isBlank()) {
+                    result.add(new TranscriptSegment(i * SEGMENT_MS, (i + 1) * SEGMENT_MS, transcription.text()));
+                }
+                for (AliyunAsrUtils.Sentence sentence : transcription.sentences()) {
+                    long startMs = i * SEGMENT_MS + sentence.startMs();
+                    long endMs = i * SEGMENT_MS + sentence.endMs();
+                    if (endMs > startMs) {
+                        precisionEvidence.add(PrecisionEvidence.asr(startMs, endMs, sentence.text()));
+                    }
                 }
             } catch (RuntimeException e) {
                 failedSegments++;
@@ -62,7 +81,7 @@ public class SegmentedTranscriptionService {
             // 于是参数错误也会被当成抖动反复重试整条 ASR+LLM 流水线。
             throw new IllegalStateException("所有 ASR 分片均处理失败", lastSegmentError);
         }
-        return result;
+        return new TranscriptionResult(result, precisionEvidence);
     }
 
     public String transcribeToText(String videoPath) {
@@ -114,6 +133,14 @@ public class SegmentedTranscriptionService {
             });
         } catch (Exception e) {
             log.warn("transcription_temporary_directory_cleanup_failed path={}", directory, e);
+        }
+    }
+
+    public record TranscriptionResult(List<TranscriptSegment> transcripts,
+                                      List<PrecisionEvidence> precisionEvidence) {
+        public TranscriptionResult {
+            transcripts = transcripts == null ? List.of() : List.copyOf(transcripts);
+            precisionEvidence = precisionEvidence == null ? List.of() : List.copyOf(precisionEvidence);
         }
     }
 }

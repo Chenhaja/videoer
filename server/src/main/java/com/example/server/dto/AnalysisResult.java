@@ -25,13 +25,34 @@ public record AnalysisResult(
             long timestampMs,
             String source,
             String content,
-            String claim
+            String claim,
+            String anchorText,
+            TimestampPrecision timestampPrecision
     ) {
+        public Evidence(long timestampMs, String source, String content, String claim) {
+            this(timestampMs, source, content, claim, "", TimestampPrecision.MINUTE);
+        }
+
+        public Evidence(long timestampMs, String source, String content, String claim, String anchorText) {
+            this(timestampMs, source, content, claim, anchorText, TimestampPrecision.MINUTE);
+        }
+
+        public Evidence(long timestampMs,
+                        TimestampPrecision timestampPrecision,
+                        String source,
+                        String content,
+                        String anchorText,
+                        String claim) {
+            this(timestampMs, source, content, claim, anchorText, timestampPrecision);
+        }
+
         public Evidence {
             if (timestampMs < 0) throw new IllegalArgumentException("evidence timestamp cannot be negative");
             source = source == null ? "UNKNOWN" : source.trim();
             content = content == null ? "" : content.trim();
             claim = claim == null ? "" : claim.trim();
+            anchorText = anchorText == null ? "" : anchorText.trim();
+            timestampPrecision = timestampPrecision == null ? TimestampPrecision.MINUTE : timestampPrecision;
         }
     }
 

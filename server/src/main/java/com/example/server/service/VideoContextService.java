@@ -2,6 +2,8 @@ package com.example.server.service;
 
 import com.example.server.dto.VideoContext;
 import com.example.server.dto.TranscriptSegment;
+import com.example.server.dto.PrecisionEvidence;
+import com.example.server.dto.PrecisionEvidenceIndex;
 import com.example.server.utils.MinioUtils;
 import com.example.server.utils.OcrUtils;
 import org.slf4j.Logger;
@@ -68,6 +70,10 @@ public class VideoContextService {
     }
 
     public VideoContext build(String videoPath, String userGoal, String traceId) {
+        return buildWithPrecision(videoPath, userGoal, traceId).context();
+    }
+
+    public ContextBuildResult buildWithPrecision(String videoPath, String userGoal, String traceId) {
         String readableVideoPath = minioUtils.readableSource(videoPath);
         Path workDir = Path.of(System.getProperty("java.io.tmpdir"), "video-context-" + UUID.randomUUID());
         List<String> uploadedEvidenceFrames = new CopyOnWriteArrayList<>();
@@ -76,11 +82,18 @@ public class VideoContextService {
         try {
             Files.createDirectories(workDir);
             // 两条分支各跑各的，单路挂掉还能带着另一半信息继续往下走。
-            Future<BranchResult<TranscriptSegment>> transcriptFuture = submitBranch(
+            Future<BranchResult<SegmentedTranscriptionService.TranscriptionResult>> transcriptFuture = submitBranch(
                     asrExecutor,
                     branchesFinished,
-                    () -> transcriptionService.transcribe(
-                            readableVideoPath, workDir.resolve("audio"), traceId));
+                    () -> {
+                        SegmentedTranscriptionService.TranscriptionResult result =
+                                transcriptionService.transcribeWithEvidence(
+                                        readableVideoPath, workDir.resolve("audio"), traceId);
+                        if (result != null) return result;
+                        List<TranscriptSegment> legacy = transcriptionService.transcribe(
+                                readableVideoPath, workDir.resolve("audio"), traceId);
+                        return new SegmentedTranscriptionService.TranscriptionResult(legacy, List.of());
+                    });
             Future<BranchResult<FramePart>> frameFuture = submitBranch(
                     ocrExecutor,
                     branchesFinished,
@@ -88,7 +101,8 @@ public class VideoContextService {
                             readableVideoPath, workDir.resolve("frames"), traceId, uploadedEvidenceFrames));
             try {
                 long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(60);
-                BranchResult<TranscriptSegment> transcriptResult = awaitBranch(transcriptFuture, deadline);
+                BranchResult<SegmentedTranscriptionService.TranscriptionResult> transcriptResult =
+                        awaitBranch(transcriptFuture, deadline);
                 BranchResult<FramePart> frameResult = awaitBranch(frameFuture, deadline);
                 return finishContext(
                         videoPath, userGoal, traceId, transcriptResult, frameResult, uploadedEvidenceFrames);
@@ -136,10 +150,10 @@ public class VideoContextService {
                 });
     }
 
-    private VideoContext finishContext(String videoPath,
+    private ContextBuildResult finishContext(String videoPath,
                                        String userGoal,
                                        String traceId,
-                                       BranchResult<TranscriptSegment> transcriptResult,
+                                       BranchResult<SegmentedTranscriptionService.TranscriptionResult> transcriptResult,
                                        BranchResult<FramePart> frameResult,
                                        List<String> uploadedEvidenceFrames) {
         if (transcriptResult.failed() && frameResult.failed()) {
@@ -158,15 +172,27 @@ public class VideoContextService {
             deleteEvidenceFrames(uploadedEvidenceFrames);
             uploadedEvidenceFrames.clear();
         }
-        List<VideoContext.VideoSegment> segments = merge(transcriptResult.items(), frameResult.items());
+        List<TranscriptSegment> transcripts = transcriptResult.failed()
+                ? List.of() : transcriptResult.items().transcripts();
+        List<FramePart> frames = frameResult.failed() ? List.of() : frameResult.items();
+        List<VideoContext.VideoSegment> segments = merge(transcripts, frames);
         if (segments.isEmpty()) throw new IllegalStateException("视频未解析出有效语音或画面文字");
-        return new VideoContext(videoPath, userGoal, segments);
+        List<PrecisionEvidence> precisionEvidence = new ArrayList<>();
+        if (!transcriptResult.failed()) precisionEvidence.addAll(transcriptResult.items().precisionEvidence());
+        frames.stream()
+                .filter(frame -> frame.preciseTimestamp()
+                        && frame.ocrText() != null && !frame.ocrText().isBlank())
+                .map(frame -> PrecisionEvidence.ocr(frame.timestampMs(), frame.ocrText(), frame.frameName()))
+                .forEach(precisionEvidence::add);
+        return new ContextBuildResult(
+                new VideoContext(videoPath, userGoal, segments),
+                new PrecisionEvidenceIndex(precisionEvidence));
     }
 
     private <T> Future<BranchResult<T>> submitBranch(
             ThreadPoolTaskExecutor executor,
             CountDownLatch branchesFinished,
-            ThrowingSupplier<List<T>> work) {
+            ThrowingSupplier<T> work) {
         try {
             return executor.submit(() -> {
                 try {
@@ -254,7 +280,7 @@ public class VideoContextService {
                         frameFiles.get(i).getFileName(), timestampMs, e);
                 frameUrl = videoPath + "#timestampMs=" + timestampMs;
             }
-            result.add(new FramePart(timestampMs, ocrText, frameUrl));
+            result.add(new FramePart(timestampMs, ocrText, frameUrl, i < timestamps.size()));
         }
         if (result.isEmpty() && failedFrames > 0) {
             throw new IllegalStateException("所有 OCR 关键帧均处理失败");
@@ -354,16 +380,23 @@ public class VideoContextService {
         }
     }
 
-    private record FramePart(long timestampMs, String ocrText, String frameName) {
+    private record FramePart(long timestampMs, String ocrText, String frameName, boolean preciseTimestamp) {
     }
 
-    private record BranchResult<T>(List<T> items, Exception error) {
-        private static <T> BranchResult<T> success(List<T> items) {
+    public record ContextBuildResult(VideoContext context, PrecisionEvidenceIndex precisionEvidence) {
+        public ContextBuildResult {
+            if (context == null) throw new IllegalArgumentException("context cannot be null");
+            precisionEvidence = precisionEvidence == null ? PrecisionEvidenceIndex.empty() : precisionEvidence;
+        }
+    }
+
+    private record BranchResult<T>(T items, Exception error) {
+        private static <T> BranchResult<T> success(T items) {
             return new BranchResult<>(items, null);
         }
 
         private static <T> BranchResult<T> failure(Exception error) {
-            return new BranchResult<>(List.of(), error);
+            return new BranchResult<>(null, error);
         }
 
         private boolean failed() {

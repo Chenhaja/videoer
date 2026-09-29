@@ -4,6 +4,9 @@ import com.example.server.dto.VideoChunk;
 import com.example.server.dto.VideoContext;
 import com.example.server.dto.VideoEvidenceHit;
 import com.example.server.dto.VideoRetrievalIntent;
+import com.example.server.dto.PrecisionEvidence;
+import com.example.server.dto.PrecisionEvidenceIndex;
+import com.example.server.dto.TimestampPrecision;
 import com.example.server.utils.DeepSeekUtils;
 import com.example.server.utils.EmbeddingUtils;
 import org.springframework.stereotype.Service;
@@ -25,15 +28,18 @@ public class VideoEvidenceRetrievalService {
     private final EmbeddingUtils embeddingUtils;
     private final QdrantVectorStore vectorStore;
     private final AgentTelemetry telemetry;
+    private final AgentCheckpointService checkpointService;
 
     public VideoEvidenceRetrievalService(DeepSeekUtils deepSeekUtils,
                                          EmbeddingUtils embeddingUtils,
                                          QdrantVectorStore vectorStore,
-                                         AgentTelemetry telemetry) {
+                                         AgentTelemetry telemetry,
+                                         AgentCheckpointService checkpointService) {
         this.deepSeekUtils = deepSeekUtils;
         this.embeddingUtils = embeddingUtils;
         this.vectorStore = vectorStore;
         this.telemetry = telemetry;
+        this.checkpointService = checkpointService;
     }
 
     public List<VideoContext.VideoSegment> retrieve(Long mediaId,
@@ -47,9 +53,12 @@ public class VideoEvidenceRetrievalService {
     public List<VideoEvidenceHit> search(Long mediaId,
                                          String query,
                                          List<VideoChunk> chunks) {
+        PrecisionEvidenceIndex precisionIndex = mediaId == null
+                ? PrecisionEvidenceIndex.empty()
+                : checkpointService.loadPrecisionEvidence(mediaId);
         return rank(mediaId, query, chunks).stream()
                 .limit(MAX_USER_HITS)
-                .map(this::toHit)
+                .map(result -> toHit(result, query, precisionIndex))
                 .toList();
     }
 
@@ -127,7 +136,9 @@ public class VideoEvidenceRetrievalService {
                 visualScore);
     }
 
-    private VideoEvidenceHit toHit(ScoredSegment result) {
+    private VideoEvidenceHit toHit(ScoredSegment result,
+                                   String query,
+                                   PrecisionEvidenceIndex precisionIndex) {
         VideoContext.VideoSegment segment = result.segment();
         List<String> ocrTexts = normalizedOcrTexts(segment);
         boolean hasTranscript = !segment.transcript().isBlank();
@@ -139,13 +150,41 @@ public class VideoEvidenceRetrievalService {
         String preferred = result.visualScore() > result.transcriptScore() ? ocrText : segment.transcript();
         if (preferred.isBlank()) preferred = hasOcr ? ocrText : segment.transcript();
         if (preferred.isBlank()) preferred = "该时间段暂无可展示文本";
+        PrecisionEvidence precise = findPrecisionEvidence(query, segment, precisionIndex);
+        if (precise != null) {
+            return new VideoEvidenceHit(
+                    precise.startMs(),
+                    precise.endMs(),
+                    precise.source(),
+                    abbreviate(precise.text()),
+                    segment.transcript(),
+                    ocrTexts,
+                    TimestampPrecision.SECOND);
+        }
         return new VideoEvidenceHit(
                 segment.startMs(),
                 segment.endMs(),
                 source,
                 abbreviate(preferred),
                 segment.transcript(),
-                ocrTexts);
+                ocrTexts,
+                TimestampPrecision.MINUTE);
+    }
+
+    private PrecisionEvidence findPrecisionEvidence(String query,
+                                                     VideoContext.VideoSegment segment,
+                                                     PrecisionEvidenceIndex index) {
+        if (index == null || index.evidences().isEmpty() || query == null || query.isBlank()) return null;
+        String normalizedQuery = normalize(query);
+        if (normalizedQuery.isBlank()) return null;
+        return index.evidences().stream()
+                .filter(candidate -> candidate.startMs() >= segment.startMs()
+                        && candidate.startMs() < segment.endMs())
+                .filter(candidate -> normalize(candidate.text()).contains(normalizedQuery))
+                .sorted(Comparator.comparingLong(PrecisionEvidence::startMs)
+                        .thenComparing(PrecisionEvidence::source))
+                .findFirst()
+                .orElse(null);
     }
 
     private String searchableText(VideoChunk chunk) {

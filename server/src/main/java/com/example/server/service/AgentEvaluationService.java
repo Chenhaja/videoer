@@ -5,6 +5,8 @@ import com.example.server.dto.AgentState;
 import com.example.server.dto.AnalysisMode;
 import com.example.server.dto.AnalysisResult;
 import com.example.server.dto.VideoContext;
+import com.example.server.dto.PrecisionEvidenceIndex;
+import com.example.server.dto.TimestampPrecision;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -38,19 +40,27 @@ public class AgentEvaluationService {
                 .filter(item -> AnalysisMode.fromNullable(item.mode()) == resolvedMode)
                 .toList();
 
-        Map<String, Object> metrics = new LinkedHashMap<>(evaluate(context, state));
+        Map<String, Object> metrics = new LinkedHashMap<>(
+                evaluate(context, state, checkpointService.loadPrecisionEvidence(mediaId)));
         metrics.put("userAcceptanceRate", userAcceptanceRate(feedback));
         metrics.put("feedbackSamples", feedback.size());
         return metrics;
     }
 
     public Map<String, Object> evaluate(VideoContext context, AgentState state) {
+        return evaluate(context, state, PrecisionEvidenceIndex.empty());
+    }
+
+    private Map<String, Object> evaluate(VideoContext context,
+                                         AgentState state,
+                                         PrecisionEvidenceIndex precisionIndex) {
         AnalysisResult result = state == null ? null : state.result();
         Map<String, Object> metrics = new LinkedHashMap<>();
         metrics.put("structuredValid", structuredValid(result));
-        metrics.put("timestampCoverageRate", timestampCoverageRate(context, result));
-        metrics.put("evidenceSupportRate", evidenceSupportRate(context, result));
-        metrics.put("claimEvidenceSupportRate", claimEvidenceSupportRate(context, result));
+        metrics.put("timestampCoverageRate", timestampCoverageRate(context, result, precisionIndex));
+        metrics.put("evidenceSupportRate", evidenceSupportRate(context, result, precisionIndex));
+        metrics.put("claimEvidenceSupportRate", claimEvidenceSupportRate(context, result, precisionIndex));
+        metrics.put("secondPrecisionRate", secondPrecisionRate(result));
         metrics.put("criticPassed", state != null && state.critique() != null && state.critique().passed());
         return metrics;
     }
@@ -62,29 +72,50 @@ public class AgentEvaluationService {
                 && result.evidence() != null && !result.evidence().isEmpty();
     }
 
-    private double evidenceSupportRate(VideoContext context, AnalysisResult result) {
+    private double evidenceSupportRate(VideoContext context,
+                                       AnalysisResult result,
+                                       PrecisionEvidenceIndex precisionIndex) {
         if (context == null || result == null || result.evidence() == null || result.evidence().isEmpty()) return 0;
         long supported = result.evidence().stream()
-                .filter(evidence -> evidenceVerificationService.supported(context, evidence))
+                .filter(evidence -> evidenceVerificationService.supported(context, evidence, precisionIndex))
                 .count();
         return (double) supported / result.evidence().size();
     }
 
-    private double timestampCoverageRate(VideoContext context, AnalysisResult result) {
+    private double timestampCoverageRate(VideoContext context,
+                                         AnalysisResult result,
+                                         PrecisionEvidenceIndex precisionIndex) {
         if (context == null || result == null || result.evidence().isEmpty()) return 0;
         long covered = result.evidence().stream()
-                .filter(evidence -> evidenceVerificationService.timestampCovered(context, evidence))
+                .filter(evidence -> evidenceVerificationService.timestampCovered(
+                        context, evidence, precisionIndex))
                 .count();
         return (double) covered / result.evidence().size();
     }
 
-    private double claimEvidenceSupportRate(VideoContext context, AnalysisResult result) {
+    private double claimEvidenceSupportRate(VideoContext context,
+                                            AnalysisResult result,
+                                            PrecisionEvidenceIndex precisionIndex) {
         if (context == null || result == null || result.conclusions().isEmpty()) return 0;
         long supported = result.conclusions().stream()
                 .filter(claim -> result.evidence().stream().anyMatch(
-                        evidence -> evidenceVerificationService.supportsClaim(context, claim, evidence)))
+                        evidence -> evidenceVerificationService.supportsClaim(
+                                context, claim, evidence, precisionIndex)))
                 .count();
         return (double) supported / result.conclusions().size();
+    }
+
+    private double secondPrecisionRate(AnalysisResult result) {
+        if (result == null || result.evidence() == null) return 0;
+        List<AnalysisResult.Evidence> eligible = result.evidence().stream()
+                .filter(evidence -> !evidence.anchorText().isBlank()
+                        && !evidence.source().equalsIgnoreCase("ASR+OCR"))
+                .toList();
+        if (eligible.isEmpty()) return 0;
+        long precise = eligible.stream()
+                .filter(evidence -> evidence.timestampPrecision() == TimestampPrecision.SECOND)
+                .count();
+        return (double) precise / eligible.size();
     }
 
     private double userAcceptanceRate(List<AgentFeedback> feedback) {

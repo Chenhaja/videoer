@@ -207,6 +207,8 @@ public class AiService {
 
         VideoContext localized = reusableContext(mediaFile.getFilePath(), ownerContext);
         checkpointService.saveContext(mediaFile.getId(), localized);
+        checkpointService.savePrecisionEvidence(
+                mediaFile.getId(), checkpointService.loadPrecisionEvidence(ownerMediaId));
         telemetry.increment(traceId, "contextContentReuses", 1);
         log.info("video_context_reused mediaId={} sourceMediaId={} contentHash={}",
                 mediaFile.getId(), ownerMediaId, contentHash);
@@ -223,9 +225,12 @@ public class AiService {
                 TaskStage.VIDEO_CONTEXT);
         long started = System.nanoTime();
         try {
-            VideoContext context = videoContextService.build(mediaFile.getFilePath(), userGoal, traceId);
+            VideoContextService.ContextBuildResult built = videoContextService.buildWithPrecision(
+                    mediaFile.getFilePath(), userGoal, traceId);
+            VideoContext context = built.context();
             try {
                 checkpointService.saveContext(mediaFile.getId(), context);
+                checkpointService.savePrecisionEvidence(mediaFile.getId(), built.precisionEvidence());
             } catch (RuntimeException e) {
                 videoContextService.deleteEvidenceFrames(context);
                 throw e;
@@ -362,6 +367,8 @@ public class AiService {
         VideoContext sourceContext = checkpointService.loadContext(sourceMediaId);
         if (sourceContext == null) return false;
         checkpointService.saveContext(mediaId, reusableContext(mediaFile.getFilePath(), sourceContext));
+        checkpointService.savePrecisionEvidence(
+                mediaId, checkpointService.loadPrecisionEvidence(sourceMediaId));
         checkpointService.saveResult(mediaId, new AgentState(
                 state.goal(), state.plan(), state.result(), state.critique(), state.round()), mode);
         persistResult(mediaFile, state);

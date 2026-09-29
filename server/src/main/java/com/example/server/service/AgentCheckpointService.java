@@ -6,6 +6,7 @@ import com.example.server.dto.AnalysisMode;
 import com.example.server.dto.TaskStage;
 import com.example.server.dto.VideoChunk;
 import com.example.server.dto.VideoContext;
+import com.example.server.dto.PrecisionEvidenceIndex;
 import com.example.server.repository.AgentCheckpointRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -108,10 +109,30 @@ public class AgentCheckpointService {
                 new TypeReference<List<VideoChunk>>() { });
     }
 
+    public PrecisionEvidenceIndex loadPrecisionEvidence(Long mediaId) {
+        PrecisionEvidenceIndex value = checkpointRepository.read(
+                mediaId,
+                mediaCheckpoint("precisionEvidence"),
+                checkpointKey(mediaId),
+                "precisionEvidence",
+                PrecisionEvidenceIndex.class);
+        return value == null ? PrecisionEvidenceIndex.empty() : value;
+    }
+
     public void saveContext(Long mediaId, VideoContext context) {
         VideoContext reusableContext = new VideoContext(context.source(), "", context.segments());
         checkpointRepository.write(mediaId, mediaCheckpoint("context"), mediaCheckpoint("stage"),
                 checkpointKey(mediaId), "context", TaskStage.CONTEXT_COMPLETED, reusableContext);
+    }
+
+    public void savePrecisionEvidence(Long mediaId, PrecisionEvidenceIndex index) {
+        checkpointRepository.write(mediaId,
+                mediaCheckpoint("precisionEvidence"),
+                mediaCheckpoint("stage"),
+                checkpointKey(mediaId),
+                "precisionEvidence",
+                TaskStage.CONTEXT_COMPLETED,
+                index == null ? PrecisionEvidenceIndex.empty() : index);
     }
 
     public void saveChunks(Long mediaId, List<VideoChunk> chunks) {

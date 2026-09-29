@@ -1,1 +1,7 @@
 {"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "后端任务入口、层次边界和质量门槛"}
+{"file": ".trellis/spec/backend/video-evidence-workflow.md", "reason": "证据时间单位、ASR/OCR流程、检索边界和Checkpoint兼容约束"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Java 21、服务边界、降级路径和单元测试要求"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "前端边界和API兼容要求"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "前端测试、构建和视频跳转兼容要求"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "旧/新响应字段的运行时归一化要求"}

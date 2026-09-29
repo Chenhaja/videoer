@@ -6,6 +6,7 @@ import com.example.server.dto.AnalysisResult;
 import com.example.server.dto.TaskStatus;
 import com.example.server.dto.TaskStage;
 import com.example.server.dto.VideoContext;
+import com.example.server.dto.PrecisionEvidenceIndex;
 import com.example.server.service.mode.ModeProfile;
 import com.example.server.utils.DeepSeekUtils;
 import org.slf4j.Logger;
@@ -28,6 +29,7 @@ public class AgentLoopService {
     private final AgentCheckpointService checkpointService;
     private final AgentTelemetry telemetry;
     private final EvidenceVerificationService evidenceVerificationService;
+    private final EvidencePrecisionService evidencePrecisionService;
     private final TaskEventService taskEventService;
     private final int maxRounds;
     private final long maxDurationMs;
@@ -39,6 +41,7 @@ public class AgentLoopService {
                             AgentCheckpointService checkpointService,
                             AgentTelemetry telemetry,
                             EvidenceVerificationService evidenceVerificationService,
+                            EvidencePrecisionService evidencePrecisionService,
                             TaskEventService taskEventService,
                             @Value("${agent.budget.max-rounds:2}") int maxRounds,
                             @Value("${agent.budget.max-duration-ms:120000}") long maxDurationMs,
@@ -49,6 +52,7 @@ public class AgentLoopService {
         this.checkpointService = checkpointService;
         this.telemetry = telemetry;
         this.evidenceVerificationService = evidenceVerificationService;
+        this.evidencePrecisionService = evidencePrecisionService;
         this.taskEventService = taskEventService;
         if (maxRounds < 1 || maxDurationMs < 1 || maxEstimatedTokens < 1 || maxEstimatedCost < 0) {
             throw new IllegalArgumentException("Agent 终止预算配置无效");
@@ -90,6 +94,11 @@ public class AgentLoopService {
         long runStartedNanos = System.nanoTime();
         AgentState savedState = mediaId == null ? null
                 : checkpointService.loadCriticState(mediaId, context.userGoal(), modeOf(profile));
+        if (savedState != null && savedState.result() != null) {
+            savedState = new AgentState(
+                    savedState.goal(), savedState.plan(), enrichResult(mediaId, context, savedState.result()),
+                    savedState.critique(), savedState.round());
+        }
         boolean terminalCheckpoint = savedState != null && savedState.result() != null
                 && savedState.critique() != null
                 && (savedState.round() >= maxRounds || savedState.critique().passed());
@@ -186,6 +195,7 @@ public class AgentLoopService {
         publishStage(mediaId, context.userGoal(), modeOf(profile),
                 "Executor 正在按计划生成结构化产物", TaskStage.EXECUTOR_STARTED);
         AnalysisResult result = deepSeekUtils.execute(context, plan, previousCritique, executeInstruction(profile));
+        result = enrichResult(mediaId, context, result);
         AgentState draft = new AgentState(context.userGoal(), plan, result, null, round);
         if (mediaId != null) {
             checkpointService.saveExecutionState(mediaId, draft, modeOf(profile));
@@ -202,12 +212,13 @@ public class AgentLoopService {
                                      AnalysisResult result,
                                      int round,
                                      ModeProfile profile) {
+        result = enrichResult(mediaId, context, result);
         publishStage(mediaId, context.userGoal(), modeOf(profile),
                 "Critic 正在核验目标覆盖与时间戳证据", TaskStage.CRITIC_STARTED);
         AgentState.CriticResult critique = normalizeCritique(
                 deepSeekUtils.critique(context, plan, result, criticInstruction(profile)));
         critique = enforceStructureBounds(result, critique, profile);
-        critique = enforceEvidenceBounds(context, result, critique);
+        critique = enforceEvidenceBounds(context, result, critique, precisionIndex(mediaId));
         telemetry.incrementCurrent("criticRounds", 1);
         if (critique.passed()) telemetry.incrementCurrent("criticPassed", 1);
 
@@ -281,7 +292,8 @@ public class AgentLoopService {
 
     private AgentState.CriticResult enforceEvidenceBounds(VideoContext context,
                                                            AnalysisResult result,
-                                                           AgentState.CriticResult critique) {
+                                                           AgentState.CriticResult critique,
+                                                           PrecisionEvidenceIndex precisionIndex) {
         critique = normalizeCritique(critique);
         boolean hasDeclaredProblems = !critique.feedback().isEmpty()
                 || !critique.missingRequirements().isEmpty()
@@ -307,11 +319,12 @@ public class AgentLoopService {
         }
         if (result == null || result.evidence() == null || result.evidence().isEmpty()) return critique;
         List<AnalysisResult.Evidence> invalidEvidence = result.evidence().stream()
-                .filter(evidence -> !evidenceVerificationService.supported(context, evidence))
+                .filter(evidence -> !evidenceVerificationService.supported(context, evidence, precisionIndex))
                 .toList();
         List<String> unsupportedClaims = result.conclusions().stream()
                 .filter(claim -> result.evidence().stream().noneMatch(
-                        evidence -> evidenceVerificationService.supportsClaim(context, claim, evidence)))
+                        evidence -> evidenceVerificationService.supportsClaim(
+                                context, claim, evidence, precisionIndex)))
                 .toList();
         if (invalidEvidence.isEmpty() && unsupportedClaims.isEmpty()) return critique;
 
@@ -335,6 +348,15 @@ public class AgentLoopService {
                 critique.missingRequirements(),
                 unsupported,
                 requiredTimestamps);
+    }
+
+    private AnalysisResult enrichResult(Long mediaId, VideoContext context, AnalysisResult result) {
+        return evidencePrecisionService.enrich(context, precisionIndex(mediaId), result);
+    }
+
+    private PrecisionEvidenceIndex precisionIndex(Long mediaId) {
+        return mediaId == null ? PrecisionEvidenceIndex.empty()
+                : checkpointService.loadPrecisionEvidence(mediaId);
     }
 
     private AgentState.CriticResult enforceStructureBounds(AnalysisResult result,

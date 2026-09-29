@@ -1,6 +1,9 @@
 package com.example.server.service;
 
 import com.example.server.dto.AnalysisResult;
+import com.example.server.dto.PrecisionEvidence;
+import com.example.server.dto.PrecisionEvidenceIndex;
+import com.example.server.dto.TimestampPrecision;
 import com.example.server.dto.VideoContext;
 import org.junit.jupiter.api.Test;
 
@@ -37,5 +40,17 @@ class EvidenceVerificationServiceTest {
                 125_000, "OCR", "根节点左子树不存在，因此应跳过", "前序遍历顺序");
 
         assertFalse(service.supported(context, evidence));
+    }
+
+    @Test
+    void secondPrecisionRequiresTheMatchingPrecisionIndex() {
+        AnalysisResult.Evidence evidence = new AnalysisResult.Evidence(
+                125_000, TimestampPrecision.SECOND, "OCR", "窗口文本",
+                "根节点、左子树、右子树", "前序遍历顺序");
+        PrecisionEvidenceIndex index = new PrecisionEvidenceIndex(List.of(
+                PrecisionEvidence.ocr(125_000, "根节点、左子树、右子树", "frame.jpg")));
+
+        assertTrue(service.supported(context, evidence, index));
+        assertFalse(service.supported(context, evidence, PrecisionEvidenceIndex.empty()));
     }
 }
