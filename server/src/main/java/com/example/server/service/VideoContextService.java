@@ -94,7 +94,7 @@ public class VideoContextService {
                                 readableVideoPath, workDir.resolve("audio"), traceId);
                         return new SegmentedTranscriptionService.TranscriptionResult(legacy, List.of());
                     });
-            Future<BranchResult<FramePart>> frameFuture = submitBranch(
+            Future<BranchResult<List<FramePart>>> frameFuture = submitBranch(
                     ocrExecutor,
                     branchesFinished,
                     () -> extractKeyFrames(
@@ -103,7 +103,7 @@ public class VideoContextService {
                 long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(60);
                 BranchResult<SegmentedTranscriptionService.TranscriptionResult> transcriptResult =
                         awaitBranch(transcriptFuture, deadline);
-                BranchResult<FramePart> frameResult = awaitBranch(frameFuture, deadline);
+                BranchResult<List<FramePart>> frameResult = awaitBranch(frameFuture, deadline);
                 return finishContext(
                         videoPath, userGoal, traceId, transcriptResult, frameResult, uploadedEvidenceFrames);
             } catch (TimeoutException e) {
@@ -154,7 +154,7 @@ public class VideoContextService {
                                        String userGoal,
                                        String traceId,
                                        BranchResult<SegmentedTranscriptionService.TranscriptionResult> transcriptResult,
-                                       BranchResult<FramePart> frameResult,
+                                       BranchResult<List<FramePart>> frameResult,
                                        List<String> uploadedEvidenceFrames) {
         if (transcriptResult.failed() && frameResult.failed()) {
             IllegalStateException failure = new IllegalStateException(
