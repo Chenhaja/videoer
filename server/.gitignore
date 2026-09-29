@@ -4,6 +4,9 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+.trellis/
+.codex/
+.agent/
 ### STS ###
 .apt_generated
 .classpath
